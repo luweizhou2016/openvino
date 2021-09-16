@@ -106,8 +106,6 @@ void axis_state::dump_axis() const {
 }
 
 bool axis_state::transpose(const ov::AxisVector& axises) {
-    std::cout << "************trans**************" << std::endl;
-    dump_axis();
 
     const std::vector<std::shared_ptr<axis>> axis_vec_bak{m_axis_vec};
     size_t idx = 0;
@@ -120,9 +118,6 @@ bool axis_state::transpose(const ov::AxisVector& axises) {
 
         idx++;
     }
-
-    dump_axis();
-    std::cout << "**************done************" << std::endl;
     return true;
 }
 
@@ -189,8 +184,6 @@ bool axis_state::check_fusion(uint8_t& is_depth_first) const {
 bool axis_state::axis_split(const std::vector<size_t>& before, const std::vector<size_t>& after) {
     size_t index_before(0), offset(0);
     size_t block_dims_cnt = before.size() - 2;
-    std::cout << "************reshape split**************" << std::endl;
-    dump_axis();
 
     for (; index_before < before.size(); index_before++) {
         if (before[index_before] == after[index_before + offset]) {
@@ -227,16 +220,14 @@ bool axis_state::axis_split(const std::vector<size_t>& before, const std::vector
             return false;
         }
     }
-    dump_axis();
-    std::cout << "************done**************" << std::endl;
+
     return true;
 }
 
 bool axis_state::axis_combine(const std::vector<size_t>& before, const std::vector<size_t>& after) {
     size_t idx_after(0), offset(0);
     std::vector<std::shared_ptr<axis>> vec_copy{};
-    std::cout << "************reshape combine**************" << std::endl;
-    dump_axis();
+
     for (; idx_after < after.size(); idx_after++) {
         if (before[idx_after + offset] == after[idx_after]) {
             vec_copy.push_back(m_axis_vec[idx_after + offset]);
@@ -263,8 +254,7 @@ bool axis_state::axis_combine(const std::vector<size_t>& before, const std::vect
     }
     // Update the axis_vec with new.
     m_axis_vec = vec_copy;
-    dump_axis();
-    std::cout << "************done**************" << std::endl;
+
     return true;
 }
 

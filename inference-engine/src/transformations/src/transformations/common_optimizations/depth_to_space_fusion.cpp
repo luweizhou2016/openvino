@@ -16,6 +16,7 @@
 #include "itt.hpp"
 
 NGRAPH_RTTI_DEFINITION(ngraph::pass::DepthToSpaceFusion, "DepthToSpaceFusion", 0);
+#define DEPTH_TO_SPACE_RANK_MIN 3
 
 namespace {
 
@@ -141,41 +142,46 @@ bool axis_state::reshape(const ngraph::Shape& before, const ngraph::Shape& after
 }
 
 bool axis_state::check_fusion(uint8_t& is_depth_first) const {
-    auto channel_dim = m_axis_vec[0];
-    auto depth_dim = m_axis_vec[1];
+    // Assume the dimension would be [N, C, D1, D2, ..., DK]
+    auto dim_N = m_axis_vec[0];
+    auto dim_C = m_axis_vec[1];
     auto rank = m_orig_shape.size();
     int32_t blk_idx_start = -1;
-    int32_t blk_cnt = 0;
+    int32_t blk_K = 0;
+    // Axis of `N` should not divided.
+    if (dim_N->get_axis_size() != 1 || dim_N->get_axis_original_order(0) != -1 || dim_N->get_axis_order(0) != 0)
+        return false;
+    // Current `C` axis should be divided from original `C` axis;
+    if (dim_C->get_axis_size() != 1 || dim_C->get_axis_original_order(0) != 1)
+        return false;
 
-    if (channel_dim->get_axis_size() != 1 || channel_dim->get_axis_original_order() != -1 ||
-        channel_dim->get_axis_order() != 0)
-        return -1;
-
-    if (depth_dim->get_axis_size() != 1 || depth_dim->get_axis_original_order() != 1 ||
-        depth_dim->get_axis_length() * pow(m_block_size, rank - 2) != m_orig_shape[1])
-        return -1;
-
-    auto depth_idx = depth_dim->get_axis_order();
+    auto depth_idx = dim_C->get_axis_order();
     if (depth_idx == 0) {
+        // Current `C` axis is the first dim of the dimensions which are divided from original `C`. So depth first
+        // maybe.
         is_depth_first = 1;
         blk_idx_start = 1;
-    } else if (depth_idx == (int32_t)(rank - 1)) {
+    } else if (depth_idx == (int32_t)(rank - 2)) {
+        // Current `C` axis is the last dim of the dimensions which are divided from original `C` So block first maybe.
         is_depth_first = 0;
         blk_idx_start = 0;
     } else {
-        return -1;
+        return false;
     }
-
-    for (size_t i = 2; i < m_axis_vec.size(); i++, blk_cnt++) {
+    // Check the [D1 * block_size, D2 * block_size, D3 * block_size, ..., DK * block_size]
+    for (size_t i = 2; i < m_axis_vec.size(); i++, blk_K++) {
         auto ptr_node = m_axis_vec[i];
+        // Combination of 2 axises;
         if (ptr_node->get_axis_size() != 2)
-            return -1;
+            return false;
+        // The first axis is the original `DK` axis
         if (ptr_node->get_axis_original_order(0) != -1 || ptr_node->get_axis_order(0) != (int32_t)i ||
             ptr_node->get_axis_length(0) != m_orig_shape[i])
-            return -1;
-        if (ptr_node->get_axis_original_order(1) != 1 || ptr_node->get_axis_order(1) != (blk_idx_start + blk_cnt) ||
+            return false;
+        // The second axis data is the divided block axis.
+        if (ptr_node->get_axis_original_order(1) != 1 || ptr_node->get_axis_order(1) != (blk_idx_start + blk_K) ||
             ptr_node->get_axis_length(1) != m_block_size)
-            return -1;
+            return false;
     }
     return true;
 }
@@ -195,7 +201,7 @@ bool axis_state::axis_split(const std::vector<size_t>& before, const std::vector
             auto res = before[index_before];
             std::vector<std::shared_ptr<axis>> split_vec;
 
-            //The axis to be split can't be one dimension which has been split before.
+            // The axis to be split can't be one dimension which has been split before.
             if (m_axis_vec[index_before]->get_axis_size() != 1)
                 return false;
 
@@ -266,7 +272,9 @@ inline bool depth_to_space_fusion_check_shape(const ngraph::Shape& start,
                                               const ngraph::Shape& end,
                                               size_t& block_size) {
     auto rank = start.size();
-    if (rank < 3 || rank != end.size() || start[0] != end[0] || start[1] % end[1] != 0 || end[2] % start[2] != 0)
+
+    if (rank < DEPTH_TO_SPACE_RANK_MIN || rank != end.size() || start[0] != end[0] || start[1] % end[1] != 0 ||
+        end[2] % start[2] != 0)
         return false;
     size_t possible_block_size = end[2] / start[2];
     auto divisor = start[1] / end[1];
@@ -389,8 +397,9 @@ ngraph::pass::DepthToSpaceFusion::DepthToSpaceFusion() {
             expected_op_type = (op_type == SHAPEORTRANS::TRANSPOSE ? SHAPEORTRANS::RESHAPE : SHAPEORTRANS::TRANSPOSE);
 
             node_iter = interleaved_begin->input_values()[0].get_node_shared_ptr();
-            // Only when output is fed to one node as input, it is possible to fuse the series.
-            if (node_iter->get_output_target_inputs(0).size() != 1) {
+            // When output is fed to several consumers, stop the interleaved checking.
+            // Only try fusing the interleave series without branching straightforward.
+            if (node_iter->get_output_target_inputs(0).size() > 1) {
                 op_type = SHAPEORTRANS::NEITHER;
                 break;
             }

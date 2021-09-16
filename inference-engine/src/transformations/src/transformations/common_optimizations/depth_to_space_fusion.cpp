@@ -7,7 +7,7 @@
 #include <math.h>
 
 #include <memory>
-#include <ngraph/opsets/opset3.hpp>
+#include <ngraph/opsets/opset8.hpp>
 #include <ngraph/pattern/op/or.hpp>
 #include <ngraph/pattern/op/wrap_type.hpp>
 #include <ngraph/rt_info.hpp>
@@ -74,7 +74,6 @@ public:
         }
     }
 
-    void dump_axis() const;
     bool transpose(const ov::AxisVector& axises);
     bool reshape(const ngraph::Shape& before, const ngraph::Shape& after);
     bool check_fusion(uint8_t& is_depth_first) const;
@@ -88,25 +87,7 @@ private:
     bool axis_combine(const std::vector<size_t>& before, const std::vector<size_t>& after);
 };
 
-void axis_state::dump_axis() const {
-    for (auto axis_vec_ptr : m_axis_vec) {
-        auto len = axis_vec_ptr->get_axis_size();
-        for (size_t j = 0; j < len; j++) {
-            if (j > 0)
-                std::cout << " X ";
-            auto parent = axis_vec_ptr->get_axis_original_order(j);
-            if (parent != -1)
-                std::cout << parent << "_";
-            std::cout << axis_vec_ptr->get_axis_order(j);
-            std::cout << "[" << axis_vec_ptr->get_axis_length(j) << "]";
-        }
-        std::cout << " ,  ";
-    }
-    std::cout << std::endl;
-}
-
 bool axis_state::transpose(const ov::AxisVector& axises) {
-
     const std::vector<std::shared_ptr<axis>> axis_vec_bak{m_axis_vec};
     size_t idx = 0;
     if (axises.size() != m_axis_vec.size())
@@ -295,7 +276,7 @@ public:
 
 inline void push_param(SHAPEORTRANS type, std::shared_ptr<ov::Node> node, std::vector<tranfrom_param>& param_vec) {
     auto const_input =
-        std::dynamic_pointer_cast<ngraph::opset3::Constant>(node->input_values()[1].get_node_shared_ptr());
+        std::dynamic_pointer_cast<ngraph::opset8::Constant>(node->input_values()[1].get_node_shared_ptr());
 
     if (type == SHAPEORTRANS::RESHAPE) {
         const ngraph::Shape data_shape = node->get_input_shape(0);
@@ -320,8 +301,8 @@ std::function<bool(const ov::Output<ov::Node>&)> output_not_fed_to_reshapeortran
             return true;
         // check the next node type.
         auto next_node = transpose_or_reshape_node->get_output_target_inputs(0).begin()->get_node()->shared_from_this();
-        if (std::dynamic_pointer_cast<ngraph::opset3::Reshape>(next_node) ||
-            std::dynamic_pointer_cast<ngraph::opset3::Transpose>(next_node)) {
+        if (std::dynamic_pointer_cast<ngraph::opset8::Reshape>(next_node) ||
+            std::dynamic_pointer_cast<ngraph::opset8::Transpose>(next_node)) {
             return false;
         }
         return true;
@@ -342,9 +323,9 @@ ngraph::pass::DepthToSpaceFusion::DepthToSpaceFusion() {
 
     auto data_pattern = std::make_shared<pattern::op::Label>(element::f32, ngraph::Shape{}, check_static_shape());
 
-    auto reshape = pattern::wrap_type<opset3::Reshape>({data_pattern, pattern::wrap_type<opset3::Constant>()},
+    auto reshape = pattern::wrap_type<opset8::Reshape>({data_pattern, pattern::wrap_type<opset8::Constant>()},
                                                        output_not_fed_to_reshapeortrans_and_not_fed_to_multi_node());
-    auto trans = pattern::wrap_type<opset3::Transpose>({data_pattern, pattern::wrap_type<opset3::Constant>()},
+    auto trans = pattern::wrap_type<opset8::Transpose>({data_pattern, pattern::wrap_type<opset8::Constant>()},
                                                        output_not_fed_to_reshapeortrans_and_not_fed_to_multi_node());
     auto reshape_or_transpose_label = std::make_shared<pattern::op::Or>(OutputVector{reshape, trans});
 
@@ -373,7 +354,7 @@ ngraph::pass::DepthToSpaceFusion::DepthToSpaceFusion() {
         auto interleaved_begin = interleaved_end;
         auto node_iter = interleaved_begin;
 
-        op_type = (std::dynamic_pointer_cast<ngraph::opset3::Reshape>(interleaved_end)) ? SHAPEORTRANS::RESHAPE
+        op_type = (std::dynamic_pointer_cast<ngraph::opset8::Reshape>(interleaved_end)) ? SHAPEORTRANS::RESHAPE
                                                                                         : SHAPEORTRANS::TRANSPOSE;
 
         expected_op_type = op_type;
@@ -395,9 +376,9 @@ ngraph::pass::DepthToSpaceFusion::DepthToSpaceFusion() {
             }
 
             // update optype to be node_iter OP type
-            op_type = (std::dynamic_pointer_cast<ngraph::opset3::Reshape>(node_iter) ||
-                       std::dynamic_pointer_cast<ngraph::opset3::Transpose>(node_iter))
-                          ? ((std::dynamic_pointer_cast<ngraph::opset3::Reshape>(node_iter)) ? SHAPEORTRANS::RESHAPE
+            op_type = (std::dynamic_pointer_cast<ngraph::opset8::Reshape>(node_iter) ||
+                       std::dynamic_pointer_cast<ngraph::opset8::Transpose>(node_iter))
+                          ? ((std::dynamic_pointer_cast<ngraph::opset8::Reshape>(node_iter)) ? SHAPEORTRANS::RESHAPE
                                                                                              : SHAPEORTRANS::TRANSPOSE)
                           : SHAPEORTRANS::NEITHER;
         }
@@ -429,10 +410,10 @@ ngraph::pass::DepthToSpaceFusion::DepthToSpaceFusion() {
         if (!axis_tracker.check_fusion(depth_first))
             return false;
 
-        auto mode = depth_first ? ngraph::opset3::DepthToSpace::DepthToSpaceMode::DEPTH_FIRST
-                                : ngraph::opset3::DepthToSpace::DepthToSpaceMode::BLOCKS_FIRST;
+        auto mode = depth_first ? ngraph::opset8::DepthToSpace::DepthToSpaceMode::DEPTH_FIRST
+                                : ngraph::opset8::DepthToSpace::DepthToSpaceMode::BLOCKS_FIRST;
 
-        auto depth_to_space = std::make_shared<ngraph::opset3::DepthToSpace>(interleaved_begin->input_value(0),
+        auto depth_to_space = std::make_shared<ngraph::opset8::DepthToSpace>(interleaved_begin->input_value(0),
                                                                              mode,
                                                                              possible_block_size);
         depth_to_space->set_friendly_name(interleaved_begin->get_friendly_name());

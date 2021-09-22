@@ -261,27 +261,28 @@ inline bool depth_to_space_fusion_check_shape(const ngraph::Shape& start,
 
 class tranfrom_param {
 public:
-    tranfrom_param(SHAPEORTRANS type, const ngraph::Shape& before_reshape, const ngraph::Shape& after_reshape)
+    tranfrom_param(SHAPEORTRANS type, const ngraph::Shape& data_shape, const ngraph::Shape& reshape_param)
         : op_type(type),
-          before_reshape(before_reshape),
-          after_reshape(after_reshape) {}
+          data_shape(data_shape),
+          reshape_param(reshape_param) {}
 
     tranfrom_param(SHAPEORTRANS type, const ov::AxisVector& trans_param) : op_type(type), trans_param(trans_param) {}
 
     const SHAPEORTRANS op_type;
-    const ngraph::Shape before_reshape;
-    const ngraph::Shape after_reshape;
+    const ngraph::Shape data_shape;
+    const ngraph::Shape reshape_param;
     const ov::AxisVector trans_param;
 };
 
 inline void push_param(SHAPEORTRANS type, std::shared_ptr<ov::Node> node, std::vector<tranfrom_param>& param_vec) {
+    auto const_input =
+        std::dynamic_pointer_cast<ngraph::opset8::Constant>(node->input_values()[1].get_node_shared_ptr());
+
     if (type == SHAPEORTRANS::RESHAPE) {
-        const ngraph::Shape before_reshape = node->get_input_shape(0);
-        const ngraph::Shape after_reshape = node->get_output_shape(0);
-        param_vec.push_back(tranfrom_param{type, before_reshape, after_reshape});
+        const ngraph::Shape data_shape = node->get_input_shape(0);
+        const ngraph::Shape reshape_param = const_input->get_shape_val();
+        param_vec.push_back(tranfrom_param{type, data_shape, reshape_param});
     } else {
-        auto const_input =
-            std::dynamic_pointer_cast<ngraph::opset8::Constant>(node->input_values()[1].get_node_shared_ptr());
         const ov::AxisVector axis_vec = const_input->get_axis_vector_val();
         param_vec.push_back(tranfrom_param{type, axis_vec});
     }
@@ -359,9 +360,6 @@ ngraph::pass::DepthToSpaceFusion::DepthToSpaceFusion() {
         expected_op_type = op_type;
 
         while (expected_op_type == op_type) {
-            if (!node_iter->get_input_partial_shape(0).is_static()) {
-                return false;
-            }
             // update the interleaved beginning and save related parameter
             interleaved_begin = node_iter;
             push_param(op_type, interleaved_begin, interleaved_param);
@@ -388,9 +386,9 @@ ngraph::pass::DepthToSpaceFusion::DepthToSpaceFusion() {
         if (op_type != SHAPEORTRANS::NEITHER || interleaved_param.size() < 3)
             return false;
 
-        auto input_shape = interleaved_begin->input_values()[0].get_shape();
+        auto input_shape = interleaved_begin->input_values()[0].get_node_shared_ptr()->get_shape();
 
-        if (!depth_to_space_fusion_check_shape(input_shape, interleaved_end->get_output_shape(0), possible_block_size) &&
+        if (!depth_to_space_fusion_check_shape(input_shape, interleaved_end->get_shape(), possible_block_size) &&
             !possible_block_size)
             return false;
 
@@ -400,7 +398,7 @@ ngraph::pass::DepthToSpaceFusion::DepthToSpaceFusion() {
             auto reverse_idx = interleaved_param.size() - 1 - i;
             auto element = interleaved_param[reverse_idx];
             if (element.op_type == SHAPEORTRANS::RESHAPE) {
-                if (!axis_tracker.reshape(element.before_reshape, element.after_reshape))
+                if (!axis_tracker.reshape(element.data_shape, element.reshape_param))
                     return false;
             } else {
                 if (!axis_tracker.transpose(element.trans_param))

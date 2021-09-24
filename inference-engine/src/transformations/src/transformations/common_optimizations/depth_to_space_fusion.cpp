@@ -283,19 +283,22 @@ ngraph::pass::DepthToSpaceFusionWithMulTransposes::
     auto transpose3 =
         pattern_to_output.at(transpose3_label).get_node_shared_ptr();
 
-    auto mode = ngraph::opset3::DepthToSpace::DepthToSpaceMode::DEPTH_FIRST;
-    std::size_t block_size = 2;
 
-    auto depth_to_space = std::make_shared<ngraph::opset3::DepthToSpace>(
-        transpose0->input_value(0), mode, block_size);
-    depth_to_space->set_friendly_name(transpose3->get_friendly_name());
+    auto reshape_new0_const = ngraph::opset3::Constant::create(ngraph::element::i64, ngraph::Shape{6}, {1, 20, 2, 2, 360, 640});
+    auto trans_new0_const = ngraph::opset3::Constant::create(ngraph::element::i64, ngraph::Shape{6}, {0, 1, 4, 2, 5, 3});
+    auto reshape_new1_const = ngraph::opset3::Constant::create(ngraph::element::i64, ngraph::Shape{4}, {1, 20, 720, 1280});
+
+    auto reshape_new0 = std::make_shared<ngraph::opset3::Reshape>(transpose0->input_value(0), reshape_new0_const, false);
+    auto trans_new0 = std::make_shared<ngraph::opset3::Transpose>(reshape_new0, trans_new0_const);
+    auto reshape_new1 = std::make_shared<ngraph::opset3::Reshape>(trans_new0, reshape_new1_const, false);
+
+    reshape_new1->set_friendly_name(transpose3->get_friendly_name());
     ngraph::copy_runtime_info({transpose0, reshape0, transpose1, reshape1,
                                transpose2, reshape2, transpose3},
-                              depth_to_space);
-    ngraph::replace_node(transpose3, depth_to_space);
+                              {reshape_new0, trans_new0, reshape_new1});
+    ngraph::replace_node(transpose3, reshape_new1);
     return true;
   };
-
   auto m = std::make_shared<ngraph::pattern::Matcher>(transpose3_label,
                                                       matcher_name);
   register_matcher(m, callback);

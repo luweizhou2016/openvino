@@ -52,7 +52,7 @@ public:
     std::vector<VectorDims> shapeInfer() const override;
 
     void setDynamicBatchLim(int lim) override;
-    bool canBeExecutedInInt8() const;
+    bool canFuseBias() const;
 
 protected:
     AttrPtr initPrimitiveAttr() override;
@@ -104,7 +104,10 @@ private:
     AttrPtr pAttr;
 
     std::shared_ptr<dnnl::primitive_attr> attr;
+    dnnl::memory::data_type outputDataType;
     void setPostOps(dnnl::primitive_attr &attr, const VectorDims &dims);
+    bool canBeExecutedInInt8() const;
+
 
     VectorDims shapeInferInternal(const VectorDims &inDims, std::vector<int32_t> outSpDims) const;
     void initPaddingR(const Shape &inShape, const Shape &outShape);

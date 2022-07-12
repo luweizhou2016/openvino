@@ -393,7 +393,7 @@ void Deconvolution::getSupportedDescriptors() {
             outPrecision = InferenceEngine::Precision::FP32;
     }
     auto inputDataType = DnnlExtensionUtils::IEPrecisionToDataType(inPrecision);
-    auto outputDataType = DnnlExtensionUtils::IEPrecisionToDataType(outPrecision);
+    outputDataType = DnnlExtensionUtils::IEPrecisionToDataType(outPrecision);
     if (inputDataType == memory::data_type::bf16 || outputDataType == memory::data_type::bf16)
        inputDataType = outputDataType = memory::data_type::bf16;
     if (!fusedWith.empty()) {
@@ -454,16 +454,71 @@ void Deconvolution::setPostOps(dnnl::primitive_attr &attr, const VectorDims &dim
         binaryShape[chIdx] = dims[chIdx];
         return binaryShape;
     };
+   auto getOutputScaleType = [](const VectorDims& dims) -> int {
+        int k;
+        for (k = 0; k < dims.size() - 1; k++) {
+            if (dims[k] != 1)
+                return -1;
+        }
+        if (dims[k] > 1)
+            return 1;  // per-OC
+        return 0;      // per-tensor
+    };
+    // set attr(oscale/zeropoint/post ops/) according to oneDNN computation procedure:
+    //  https://oneapi-src.github.io/oneDNN/dev_guide_inference_int8.html
+    auto postop = fusedWith.begin();
 
-    for (auto &node : fusedWith) {
+    // only the first postop may be mapped as output scale:
+    //   1. FakeQuantize
+    //   2. DequantizeMultiply
+    if (canBeExecutedInInt8() && postop != fusedWith.end()) {
+        if (auto* fakeQuantizeNode = dynamic_cast<FakeQuantize *>(postop->get())) {
+            const Dim outputChannel = dims[1];
+            auto scale = fakeQuantizeNode->simplifyToScale(outputDataType, outputChannel);
+            if (!scale.empty()) {
+                if (std::all_of(scale.cbegin(), scale.cend(), [&](float val) { return val == scale[0]; })) {
+                    scale.resize(1);
+                    attr.set_output_scales(0, scale);
+                } else {
+                    attr.set_output_scales(1 << 1, scale);
+                }
+                ++postop;
+            }
+        } else if (auto* eltwiseNode = dynamic_cast<Eltwise *>(postop->get())) {
+            int const_port = 1 - eltwiseNode->getFusingPort();
+            if (eltwiseNode->getAlgorithm() == Algorithm::EltwiseMultiply && (const_port == 0 || const_port == 1)) {
+                auto t = getOutputScaleType(eltwiseNode->getInputShapeAtPort(const_port).getStaticDims());
+                if (t == 0) {
+                    attr.set_output_scales(0, eltwiseNode->getScales());
+                    ++postop;
+                } else if (t == 1) {
+                    attr.set_output_scales(1 << 1, eltwiseNode->getScales());
+                    ++postop;
+                }
+            }
+        }
+    }
+
+    // all the rest must be mapped as postOps
+    while (postop != fusedWith.end()) {
+        auto& node = *postop++;
         if (auto* eltwiseNode = dynamic_cast<Eltwise *>(node.get())) {
             // TODO [DS]: change to shape from memory
-            // use legacy depthwise since backprop convolution does not support binary post ops
-            eltwiseNode->appendPostOps(ops, dims, postOpsArgs);
+            if (!canBeExecutedInInt8()) {
+                    // use legacy depthwise since backprop convolution does not support binary/eltwise post-ops.
+                    eltwiseNode->appendPostOps(ops, dims, postOpsArgs);
+                } else if (eltwiseNode->getOneDnnAlgorithm() != dnnl::algorithm::undef) {
+                    // dnnl::deconvolution_forward can support eltwise post ops.
+                    eltwiseNode->appendPostOps(ops, dims, postOpsArgs);
+                } else {
+                    // dnnl::deconvolution_forward can support binary post ops.
+                    eltwiseNode->appendBinPostOps(ops, getBinPostOpShape(), postOpsArgs);
+                }
             continue;
         }
         if (auto* fakeQuantizeNode = dynamic_cast<FakeQuantize *>(node.get())) {
-            fakeQuantizeNode->appendBinPostOps(ops, getBinPostOpShape(), postOpsArgs);
+            fakeQuantizeNode->appendBinPostOpsOptimized(ops, getBinPostOpShape(), postOpsArgs,
+                    node == fusedWith[fusedWith.size() - 1], outputDataType);
             continue;
         }
         IE_THROW() << "Fusing of " << NameFromType(node->getType()) << " operation to " << NameFromType(this->getType()) << " node is not implemented";
@@ -728,7 +783,7 @@ void Deconvolution::createPrimitive() {
         dnnl::memory::desc dnnlBiasDesc;
         if (biasDesc != nullptr)
             // WA to align IR bias representation (3 to 5 rank tensors) to oneDNN representation (1 rank tensor)
-            dnnlBiasDesc = biasDesc->getDnnlDesc().reshape({static_cast<dnnl_dim_t>(biasesDims[0])});
+            dnnlBiasDesc = biasDesc->getDnnlDesc().reshape({static_cast<dnnl::memory::dim>(biasesDims[0])});
         auto desc = createInt8MkldnnDeconvDesc(inDesc->getDnnlDesc(), wgh_candidate, dnnlBiasDesc, outDesc->getDnnlDesc(), withBiases,
                                                stride, dilation, paddingL, paddingR);
         AttrPtr pAttr = makePrimitiveAttr(outDims);
@@ -1065,6 +1120,16 @@ std::vector<int32_t> Deconvolution::readOutputSpatialDims() const {
     const int32_t *outShapePtr = reinterpret_cast<const int32_t *>(shapeMemPtr->GetPtr());
     std::vector<int32_t> outSpDims(outShapePtr, outShapePtr + shapeMemPtr->getStaticDims()[0]);
     return outSpDims;
+}
+
+bool Deconvolution:: canFuseBias() const {
+//Only dnnl::deconvolution_forward can fuse bias add,
+//dnnl::convolution_backward_data can't support.
+//only U8 use dnnl::deconvolution_forward primitive.
+    return (canBeExecutedInInt8() &&
+            getChildEdges().size() == 1 &&
+            externOutShape ? getParentEdges().size() == 3 : getParentEdges().size() == 2 &&
+            fusedWith.empty());
 }
 
 }   // namespace node

@@ -201,7 +201,6 @@ private:
 
     std::vector<float> fqScales;
 
-
     bool isPostOpDataInitialized = false;
     bool isLegacyPostOpDataInitialized = false;
 

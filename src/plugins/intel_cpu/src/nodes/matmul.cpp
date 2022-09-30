@@ -171,8 +171,51 @@ void MatMul::setPostOps(dnnl::primitive_attr &attr, const VectorDims& dims, bool
         binaryShape[chIdx] = dims[chIdx];
         return binaryShape;
     };
+    auto getOutputScaleType = [](const VectorDims& dims) -> int {
+        int k;
+        for (k = 0; k < dims.size() - 1; k++) {
+            if (dims[k] != 1)
+                return -1;
+        }
+        if (dims[k] > 1)
+            return 1;  // per-OC
+        return 0;      // per-tensor
+    };
+    const auto channelAxis = getFusingAxis();
+    size_t OC = getOutputShapeAtPort(0).getDims()[channelAxis];
+    // set attr(oscale/zeropoint/post ops/) according to oneDNN computation procedure:
+    //  https://oneapi-src.github.io/oneDNN/dev_guide_inference_int8.html
+    auto postop = fusedWith.begin();
 
-    for (const auto &node : fusedWith) {
+    // only the first postop may be mapped as output scale:
+    //   1. FakeQuantize
+    //   2. DequantizeMultiply
+    if (canWithInt8 && postop != fusedWith.end()) {
+        if (auto* fakeQuantizeNode = dynamic_cast<FakeQuantize *>(postop->get())) {
+            auto scale = fakeQuantizeNode->simplifyToScale(outputDataType, OC);
+            if (!scale.empty()) {
+                attr.set_output_scales(1 << channelAxis, scale);
+                ++postop; // mapped
+            }
+        } else if (auto* eltwiseNode = dynamic_cast<Eltwise *>(postop->get())) {
+            int const_port = 1 - eltwiseNode->getFusingPort();
+            if (eltwiseNode->getAlgorithm() == Algorithm::EltwiseMultiply && (const_port == 0 || const_port == 1)) {
+                auto t = getOutputScaleType(eltwiseNode->getInputShapeAtPort(const_port).getStaticDims());
+                if (t == 0) {
+                    attr.set_output_scales(0, eltwiseNode->getScales());
+                    ++postop;  // mapped
+                }
+                if (t == 1) {
+                    attr.set_output_scales(1 << channelAxis, eltwiseNode->getScales());
+                    ++postop;  // mapped
+                }
+            }
+        }
+    }
+
+    // all the rest must be mapped as postOps
+    while (postop != fusedWith.end()) {
+        auto& node = *postop++;
         if (auto* eltwiseNode = dynamic_cast<Eltwise *>(node.get())) {
             if (eltwiseNode->getOneDnnAlgorithm() != dnnl::algorithm::undef) {
                 eltwiseNode->appendPostOps(ops, dims, postOpsArgs);
@@ -181,7 +224,8 @@ void MatMul::setPostOps(dnnl::primitive_attr &attr, const VectorDims& dims, bool
             }
             continue;
         } else if (auto* fakeQuantizeNode = dynamic_cast<FakeQuantize *>(node.get())) {
-            fakeQuantizeNode->appendBinPostOps(ops, getBinPostOpShape(), postOpsArgs);
+                fakeQuantizeNode->appendBinPostOpsOptimized(ops, getBinPostOpShape(), postOpsArgs,
+                    node == fusedWith[fusedWith.size() - 1], outputDataType);
             continue;
         }
 
@@ -319,6 +363,8 @@ void MatMul::getSupportedDescriptors() {
     inDataDesc[0] = std::make_shared<DnnlBlockedMemoryDesc>(firstInPortPrec, staticInputShapes[0], inStrides0);
     inDataDesc[1] = std::make_shared<DnnlBlockedMemoryDesc>(secondInPortPrec, staticInputShapes[1], inStrides1);
     outDataDesc   = std::make_shared<DnnlBlockedMemoryDesc>(outPortPrec, staticOutputShape);
+    outputDataType = DnnlExtensionUtils::IEPrecisionToDataType(outPortPrec);
+    canWithInt8 = canBeExecutedInInt8(firstInPortPrec, secondInPortPrec);
 
     createDescriptor({inDataDesc[0], inDataDesc[1]}, {outDataDesc});
 }

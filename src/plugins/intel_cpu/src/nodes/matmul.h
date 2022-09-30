@@ -62,6 +62,8 @@ private:
 
     std::array<DnnlBlockedMemoryDescPtr, 2> inDataDesc;
     DnnlBlockedMemoryDescPtr outDataDesc;
+    dnnl::memory::data_type outputDataType;
+    bool canWithInt8;
 };
 
 }   // namespace node

@@ -1527,6 +1527,7 @@ void Graph::EnforceBF16() {
         }
     };
 
+
     /* Skip BF16 enforcement for tail of the graph by forming set of nodes to skip.
      * Necessary to maintain accuracy.
      * Experiments show zero peformance impact on average */
@@ -1537,9 +1538,81 @@ void Graph::EnforceBF16() {
         searchForNodesToSkip(node, nodesToSkip);
     }
 
+    SortTopologically();
+
+    const auto topDownbf16Env = std::getenv("BF16_TOP_DOWN_NUM");
+    const auto topDownfp32Env = std::getenv("FP32_TOP_DOWN_NUM");
+    const auto enforceFp32Env = std::getenv("ENFORCE_FP32_NODES");
+#ifdef CPU_DEBUG_CAPS
+#define DUMP_ENV_NAMES(env)     do { if (env) std::cout << #env << " is :" << env << std::endl; } while (0)
+
+#else
+#define DUMP_ENV_NAMES(env)
+#endif
+
+    DUMP_ENV_NAMES(topDownbf16Env);
+    DUMP_ENV_NAMES(topDownfp32Env);
+    DUMP_ENV_NAMES(enforceFp32Env);
+
+    std::vector<std::string> fp32NameVec{};
+
+    auto getFp32NodeList = [&fp32NameVec](std::string fp32NodesEnv, const std::string delimiter) {
+        size_t pos = 0;
+        std::string token;
+        while ((pos = fp32NodesEnv.find(delimiter)) != std::string::npos) {
+            token = fp32NodesEnv.substr(0, pos);
+            fp32NameVec.push_back(token);
+            fp32NodesEnv.erase(0, pos + delimiter.length());
+        }
+        if (!fp32NodesEnv.empty())
+            fp32NameVec.push_back(fp32NodesEnv);
+    };
+
+    if (topDownbf16Env && topDownfp32Env)
+        IE_THROW() << "Conflict when setting BF16/FP32_TOP_DOWN_NUM";
+    size_t topDownnum;
+    if (topDownbf16Env || topDownfp32Env) {
+        std::stringstream sstream(topDownbf16Env ? topDownbf16Env : topDownfp32Env);
+        sstream >> topDownnum;
+    }
+    size_t computiveNodeIdx = 0;
+    auto isComputiveNode = [](const NodePtr nodePtr) -> bool {
+    if (nodePtr->getType() == Type::Convolution ||
+        nodePtr->getType() == Type::FullyConnected ||
+        nodePtr->getType() == Type::MatMul ||
+        nodePtr->getType() == Type::RNNCell ||
+        nodePtr->getType() == Type::RNNSeq)
+        return true;
+    return false;};
     for (const auto& node : graphNodes) {
         if (nodesToSkip.count(node) && !node->enforceBF16evenForGraphTail)
             continue;
+
+        if (isComputiveNode(node) && topDownbf16Env && (computiveNodeIdx+1 > topDownnum)) {
+            computiveNodeIdx++;
+            continue;
+        }
+        if (isComputiveNode(node) && topDownfp32Env && (computiveNodeIdx+1 <= topDownnum)) {
+            computiveNodeIdx++;
+            continue;
+        }
+
+        if (enforceFp32Env) {
+            getFp32NodeList(enforceFp32Env, ",");
+            bool enforceFP32 = false;
+            for (const auto& nodeName : fp32NameVec) {
+                if (nodeName == node->getName()) {
+                    enforceFP32 = true;
+                    break;
+                }
+            }
+            if (enforceFP32) {
+#ifdef CPU_DEBUG_CAPS
+                DEBUG_LOG("####Enforce fp32 node:", node->getName());
+#endif
+                continue;
+            }
+        }
 
         if (node->getType() != Type::Input && node->getType() != Type::Output) {
             DEBUG_LOG("#", node->getExecIndex(),
@@ -1554,9 +1627,16 @@ void Graph::EnforceBF16() {
                     // Concatenation node is exception because it doesn't change an accuracy for BF16 activation
                       node->getType() != Type::Concatenation) &&
                     // exclude Eltwise after Input since it supports conversion to BF16
+
                     !(parent->getType() == Type::Input && (node->getType() == Type::Eltwise || node->getType() == Type::Subgraph)) &&
-                    node->getOriginalInputPrecisionAtPort(i) == Precision::FP32)
+                    node->getOriginalInputPrecisionAtPort(i) == Precision::FP32) {
                     node->setOriginalInputPrecisionAtPort(i, Precision::BF16);
+#ifdef CPU_DEBUG_CAPS
+                        if (isComputiveNode(node)) {
+                            DEBUG_LOG("[BF16_MARK_NODE]: ",  node->getName());
+                        }
+#endif
+                }
             }
 
             for (size_t i = 0; i < node->getOriginalOutputsNumber(); i++) {

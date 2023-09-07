@@ -1026,7 +1026,8 @@ bool FullyConnected::canBeExecutedInConv1x1() const {
         widthInConv = srcDims[inRank - 2];
         K = srcDims[inRank - 1];
         N = weightDims[0];
-        if (weightMemPtr->getSize() >= (16 * 1 << 20))
+        auto weight_size = std::getenv("WEIGHT_SIZE");
+        if (weight_size && weightMemPtr->getSize() >= (static_cast<size_t>(atoi(weight_size)) * 1 << 20))
             retVal = false;
         if (!(widthInConv >= 2 && widthInConv <= 3136 &&
               K >= 96 && K <= 4096 &&

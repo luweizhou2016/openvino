@@ -174,6 +174,7 @@ private:
     MemoryPtr stockInputZeroPointsMemPtr;
     dnnl::memory::data_type outputDataType = dnnl::memory::data_type::undef;
     ov::element::Type sumPrc = ov::element::undefined;
+    bool skipZeroPoint = false;
 
     // TODO: migrate on convolution_auto algorithm for x64
 #if defined(OPENVINO_ARCH_X86_64)

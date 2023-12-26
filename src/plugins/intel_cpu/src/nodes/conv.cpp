@@ -296,6 +296,10 @@ Convolution::Convolution(const std::shared_ptr<ov::Node>& op, const GraphContext
         paddingR = groupConvolutionOp->get_pads_end();
         autoPadding = one_of(groupConvolutionOp->get_auto_pad(), ov::op::PadType::SAME_UPPER, ov::op::PadType::SAME_LOWER);
     }
+    if (std::getenv("SKIP_ZP"))
+        skipZeroPoint = true;
+    else
+        skipZeroPoint = false;
 }
 
 bool Convolution::canBeExecutedInInt8() const {
@@ -345,8 +349,8 @@ const std::vector<impl_desc_type>& Convolution::getDefaultImplPriority() {
         impl_desc_type::jit_avx512_dw,
         impl_desc_type::jit_avx512_1x1,
         impl_desc_type::jit_avx512,
-        impl_desc_type::brgconv_avx2_1x1,
-        impl_desc_type::brgconv_avx2,
+        // impl_desc_type::brgconv_avx2_1x1,
+        // impl_desc_type::brgconv_avx2,
         impl_desc_type::jit_uni_dw,
         impl_desc_type::jit_uni_1x1,
         impl_desc_type::jit_uni,
@@ -978,7 +982,8 @@ void Convolution::SetPostOpsAndZeroPoints(std::vector<dnnl::primitive_attr> &att
     // attr[0] - Legacy post ops + Legacy zero points.
     DEBUG_LOG(getName(), ": set post ops, attr 0, useLegacyPostOps=true");
     setPostOps(attrs[0], outputShape, true);
-    addLegacyZeroPoints(attrs[0]);
+    if (!skipZeroPoint)
+        addLegacyZeroPoints(attrs[0]);
 
     //dw-conv would be fused into conv only on AVX2 platform. no need attr[1]. Avoid extra useless attribute.
     if (attrContainsPostOp(attrs[0], dnnl::impl::primitive_kind::convolution)) {
@@ -1012,7 +1017,8 @@ void Convolution::SetPostOpsAndZeroPoints(std::vector<dnnl::primitive_attr> &att
         DEBUG_LOG(getName(), ": set post ops, attr 1, useLegacyPostOps=false");
         setPostOps(attrs[1], outputShape, false);
     }
-    addZeroPoints(attrs[1]);
+    if (!skipZeroPoint)
+        addZeroPoints(attrs[1]);
 }
 
 void Convolution::initDescriptor(const NodeConfig& config) {
@@ -1225,13 +1231,15 @@ void Convolution::prepareParams() {
     if (biasMemPtr) {
         biasDesc = biasMemPtr->getDescWithType<DnnlMemoryDesc>();
     }
-
+    auto skip = skipZeroPoint;
     auto initPrimitiveAttr = [&]() {
         dnnl::primitive_attr attr;
-        if (preferLegacyZeroPoint)
-            addLegacyZeroPoints(attr);
-        else
-            addZeroPoints(attr);
+        if (!skip) {
+            if (preferLegacyZeroPoint)
+                addLegacyZeroPoints(attr);
+            else
+                addZeroPoints(attr);
+        }
         setPostOps(attr, outMemoryDesc->getShape().getStaticDims(), preferLegacyPostOps, true);
         attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
 
@@ -1401,11 +1409,12 @@ void Convolution::prepareParams() {
     if (withBiases) {
         primArgs[DNNL_ARG_BIAS] = biasMemPtr->getPrimitive();
     }
-
-    if (preferLegacyZeroPoint)
-        appendLegacyZeroPointsArgs();
-    else
-        appendZeroPointsArgs();
+    if (!skipZeroPoint) {
+        if (preferLegacyZeroPoint)
+            appendLegacyZeroPointsArgs();
+        else
+            appendZeroPointsArgs();
+    }
 
     Node::appendPostOpArgs(*pAttrLocal, primArgs, convPostOpsArgs[preferLegacyPostOps]);
 

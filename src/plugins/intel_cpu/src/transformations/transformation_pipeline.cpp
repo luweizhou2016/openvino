@@ -523,7 +523,7 @@ void Transformations::Lpt(const bool hasINT16orINT32Levels, const std::vector<ov
     if (dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx512_core_amx)) {
         input0LowPrecisionList = {ov::element::u8, ov::element::i8};
     } else {
-        input0LowPrecisionList = {ov::element::u8};
+        input0LowPrecisionList = {ov::element::u8, ov::element::i8};
     }
 
     auto supportedPrecisions = std::vector<PrecisionsRestriction>({

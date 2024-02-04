@@ -48,6 +48,8 @@ public:
 
     bool canFuseBias() const;
     bool canBeExecutedInInt8() const override;
+    void initOptimalPrimitiveDescriptor() override;
+    void selectOptimalPrimitiveDescriptor() override;
 
 protected:
     AttrPtr initPrimitiveAttr() override;
@@ -89,7 +91,7 @@ private:
     size_t IC = 0;
     size_t OC = 0;
     std::vector<int32_t> lastOutputSpatialDims;
-    VectorDims int8WeightDims;
+    VectorDims deconvWeightDims;
     VectorDims expectedBiasDims {};
 
     bool useACL = false;

@@ -310,6 +310,15 @@ void Node::selectPreferPrimitiveDescriptor(const std::vector<impl_desc_type>& pr
 
         if (selectedPrimitive >= 0) {
             selectPrimitiveDescriptorByIndex(selectedPrimitive);
+            NodeDesc* node_desc = getSelectedPrimitiveDescriptor();
+            int i = 0;
+            for (auto & conf : node_desc->getConfig().inConfs) {
+                    MemoryDescPtr mem_desc = conf.getMemDesc();
+                    if (!mem_desc) {
+                        std::cout << "!!!!!!!!!!!!" << getName() << " " << i << std::endl;
+                    }
+                    i++;
+    }
             return;
         }
     }
@@ -666,7 +675,6 @@ void Node::initSupportedPrimitiveDescriptors() {
 
         const NodeConfig config(inConfs, outConfs);
         const impl_desc_type impl_type = parse_impl_name(prim_desc.impl_info_str());
-
         supportedPrimitiveDescriptors.emplace_back(config, impl_type);
     };
 
@@ -691,8 +699,10 @@ void Node::initSupportedPrimitiveDescriptors() {
 
         // fallback. if none of the primitive types is present in the priority list just add first implementation
         // @todo this fallback is not necessary if primitive priority list is filled correctly
-        if (supportedPrimitiveDescriptors.empty())
+        if (supportedPrimitiveDescriptors.empty()) {
+            std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
             addSupportedPrimitiveDescriptor(first_desc);
+        }
     }
 }
 
@@ -1140,9 +1150,9 @@ void Node::initOptimalPrimitiveDescriptor() {
     for (size_t i = 0; i < config.inConfs.size(); i++) {
         if (!isDynamicNode() || config.inConfs[i].getMemDesc()->isDefined()) {
             auto inpPortDesc = getConsistentInputDesc(config, i);
-            DEBUG_LOG(getName(), ": input PortDesc before: ", *inpPortDesc->getMemDesc());
+            //DEBUG_LOG(getName(), ": input PortDesc before: ", *inpPortDesc->getMemDesc());
             config.inConfs[i].setMemDesc(inpPortDesc->getMemDesc());
-            DEBUG_LOG(getName(), ": input PortDesc after: ", *config.inConfs[i].getMemDesc());
+            //DEBUG_LOG(getName(), ": input PortDesc after: ", *config.inConfs[i].getMemDesc());
         }
     }
 
@@ -1150,7 +1160,7 @@ void Node::initOptimalPrimitiveDescriptor() {
         auto outMemDesc = config.outConfs[i].getMemDesc();
         if (!isDynamicNode() || outMemDesc->isDefined()) {
             auto outPortDesc = getConsistentOutputDesc(config, i);
-            DEBUG_LOG(getName(), ": output PortDesc before: ", *outPortDesc->getMemDesc());
+            //DEBUG_LOG(getName(), ": output PortDesc before: ", *outPortDesc->getMemDesc());
             config.outConfs[i].setMemDesc(outPortDesc->getMemDesc());
         } else {
             // it is assumed that the nodes will define dense tensors on output edges

@@ -352,11 +352,11 @@ const std::vector<impl_desc_type>& Convolution::getDefaultImplPriority() {
             impl_desc_type::jit_avx512_dw,
             impl_desc_type::jit_avx512_1x1,
             impl_desc_type::jit_avx512,
-            impl_desc_type::brgconv_avx2_1x1,
-            impl_desc_type::brgconv_avx2,
             impl_desc_type::jit_avx2_dw,
             impl_desc_type::jit_avx2_1x1,
             impl_desc_type::jit_avx2,
+            impl_desc_type::brgconv_avx2_1x1,
+            impl_desc_type::brgconv_avx2,
             impl_desc_type::jit_avx_dw,
             impl_desc_type::jit_avx_1x1,
             impl_desc_type::jit_avx,
@@ -599,8 +599,8 @@ void Convolution::getSupportedDescriptors() {
         in_candidate = std::make_shared<DnnlBlockedMemoryDesc>(inputShape, inputDataType, nCsp16c);
         out_candidate = std::make_shared<DnnlBlockedMemoryDesc>(outputShape, outputDataType, nCsp16c);
         createDescriptor({ in_candidate }, { out_candidate });
-        in_candidate = std::make_shared<DnnlBlockedMemoryDesc>(inputShape, inputDataType, nCsp8c);
-        out_candidate = std::make_shared<DnnlBlockedMemoryDesc>(outputShape, outputDataType, nCsp8c);
+        in_candidate = std::make_shared<DnnlBlockedMemoryDesc>(inputShape, inputDataType, nspc);
+        out_candidate = std::make_shared<DnnlBlockedMemoryDesc>(outputShape, outputDataType, nspc);
         createDescriptor({ in_candidate }, { out_candidate });
     }
 

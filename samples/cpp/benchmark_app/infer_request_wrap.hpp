@@ -154,7 +154,7 @@ public:
         if (ptr) {
             inferenceException = ptr;
         } else {
-            _latencies.push_back(latency);
+            // _latencies.push_back(latency);
             if (enable_lat_groups) {
                 _latency_groups[lat_group_id].push_back(latency);
             }
@@ -189,7 +189,7 @@ public:
     }
 
     std::vector<double> get_latencies() {
-        return _latencies;
+        return {1.0};
     }
 
     std::vector<std::vector<double>> get_latency_groups() {

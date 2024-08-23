@@ -489,6 +489,22 @@ void Concat::execute(dnnl::stream strm) {
 
     if (canOptimizeNspc) {
         execNspcSpecCase();
+#if 1
+        static std::atomic<int> times{0};
+        if (one_of(getName(), "/up0_resnet/Concat_2")) {
+            times++;
+            if (times > 1) {
+                size_t cnt = 0;
+                while (1) {
+                    execNspcSpecCase();
+                    printf(".");
+                    cnt++;
+                    if (cnt % 200 == 0)
+                        printf("\n");
+                }
+            }
+        }
+#endif
         return;
     }
 
@@ -559,13 +575,41 @@ void Concat::execNspcSpecCase() {
 
         nonZeroInShapes++;
     }
-
-    const size_t iter_count = getParentEdgeAt(firstNonZeroEdge)->getMemory().getSize() / channelsDataSize[0];
-
+    const auto& src0_mem = getParentEdgeAt(firstNonZeroEdge)->getMemoryPtr();
+    const auto& shape = src0_mem->getStaticDims();
+    const auto product = std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<Dim>());
+    const size_t iter_count = product / shape[channelAxis];
+    MAYBE_UNUSED(iter_count);
+#if 0
+    static std::atomic<int> times{0};
+    if (one_of(getName(), "/up0_resnet/Concat_2")) {
+        times++;
+        if (times > 1) {
+            size_t cnt = 0;
+            while (1) {
+                {
+                    auto size = getParentEdgeAt(firstNonZeroEdge)->getMemory().getSize();
+                    if (size == 0)
+                        printf("!!!!!!!!!!!!!!!!!!!!!!\n");
+                }
+                cnt++;
+                if (cnt % 1000 == 0)
+                    printf(".\n");
+                }
+        }
+    }
+#else
+    {
+        auto size = getParentEdgeAt(firstNonZeroEdge)->getMemory().getSize();
+        if (size == 0)
+            printf("!!!!!!!!!!!!!!!!!!!!!!\n");
+    }
+#endif
     parallel_for(iter_count, [&](int i) {
         const size_t dst_off = i * channels_size;
         for (size_t j = 0; j < nonZeroInShapes; j++) {
             cpu_memcpy(dst_ptrs[j] + dst_off, src_ptrs[j] + i * channelsDataSize[j], channelsDataSize[j]);
+            // memcpy(dst_ptrs[j] + dst_off, src_ptrs[j] + i * channelsDataSize[j], 1);
         }
     });
 }

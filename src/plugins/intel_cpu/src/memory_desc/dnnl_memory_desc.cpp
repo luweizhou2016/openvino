@@ -101,6 +101,10 @@ size_t DnnlMemoryDesc::getCurrentMemSizeImp() const {
     return DnnlExtensionUtils::getMemSizeForDnnlDesc(desc);
 }
 
+size_t DnnlMemoryDesc::getCurrentMemSizeImp2() const {
+    return DnnlExtensionUtils::getMemSizeForDnnlDesc2(desc);
+}
+
 size_t DnnlMemoryDesc::getElementOffset(size_t elemNumber) const {
     dnnl::impl::memory_desc_wrapper wrapped(desc.get());
     return wrapped.off_l(elemNumber);

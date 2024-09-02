@@ -529,45 +529,66 @@ void Concat::exec1DCase() {
 }
 
 void Concat::execNspcSpecCase() {
-    const auto& dst_memory = getChildEdgeAt(0)->getMemory();
-    const size_t num_src = getParentEdges().size();
-    uint8_t* dst_ptr = dst_memory.getDataAs<uint8_t>();
-    const size_t dataSize = DnnlExtensionUtils::sizeOfDataType(dst_memory.getDataType());
+    // const auto& dst_memory = getChildEdgeAt(0)->getMemory();
+    // const size_t num_src = getParentEdges().size();
+    // uint8_t* dst_ptr = dst_memory.getDataAs<uint8_t>();
+    // const size_t dataSize = DnnlExtensionUtils::sizeOfDataType(dst_memory.getDataType());
 
-    std::vector<size_t> channelsDataSize;
-    size_t channels_size = 0;
-    std::vector<const uint8_t*> src_ptrs;
-    std::vector<uint8_t*> dst_ptrs;
+    // std::vector<size_t> channelsDataSize;
+    // size_t channels_size = 0;
+    // std::vector<const uint8_t*> src_ptrs;
+    // std::vector<uint8_t*> dst_ptrs;
 
-    size_t nonZeroInShapes = 0;
-    int firstNonZeroEdge = -1;
-    for (size_t i = 0; i < num_src; i++) {
-        const auto& src_mem = getParentEdgeAt(i)->getMemory();
-        if (src_mem.getShape().hasZeroDims()) {
-            continue;
-        }
-        const size_t num_channels = src_mem.getStaticDims()[channelAxis];
+    // size_t nonZeroInShapes = 0;
+    // int firstNonZeroEdge = -1;
+    // for (size_t i = 0; i < num_src; i++) {
+    //     const auto& src_mem = getParentEdgeAt(i)->getMemory();
+    //     if (src_mem.getShape().hasZeroDims()) {
+    //         continue;
+    //     }
+    //     const size_t num_channels = src_mem.getStaticDims()[channelAxis];
 
-        channelsDataSize.push_back(num_channels * dataSize);
-        src_ptrs.push_back(src_mem.getDataAs<const uint8_t>());
-        dst_ptrs.push_back(dst_ptr + channels_size);
-        channels_size += num_channels * dataSize;
+    //     channelsDataSize.push_back(num_channels * dataSize);
+    //     src_ptrs.push_back(src_mem.getDataAs<const uint8_t>());
+    //     dst_ptrs.push_back(dst_ptr + channels_size);
+    //     channels_size += num_channels * dataSize;
 
-        if (firstNonZeroEdge == -1) {
-            firstNonZeroEdge = i;
-        }
+    //     if (firstNonZeroEdge == -1) {
+    //         firstNonZeroEdge = i;
+    //     }
 
-        nonZeroInShapes++;
+    //     nonZeroInShapes++;
+    // }
+    // const Shape& shape = getParentEdgeAt(firstNonZeroEdge)->getMemoryPtr()->getShape();
+    // const size_t iter_count = shape.getElementsCount() / shape.getStaticDims()[channelAxis];
+
+    // if (one_of(getName(), "/up0_resnet/Concat", "/up1_resnet/Concat", "/up2_resnet/Concat", "/up3_resnet/Concat")) {
+
+    static std::atomic<int> times{0};
+    if (one_of(getName(), "/up0_resnet/Concat"))
+        times++;
+    // if (times > 1) {
+    //     const size_t size = std::dynamic_pointer_cast<Memory>(getParentEdgeAt(0)->getMemoryPtr())->getSize2();
+    //     if (size == 0)
+    //         printf("!!!!!!!!!!!!!!\n");
+    // }
+    if (times > 1) {
+            void* p = nullptr;
+            int rc = ::posix_memalign(&p, 64, 664);
+            ::memset(p, 0, 664);
+            ::free(p);
     }
-    const Shape& shape = getParentEdgeAt(firstNonZeroEdge)->getMemoryPtr()->getShape();
-    const size_t iter_count = shape.getElementsCount() / shape.getStaticDims()[channelAxis];
 
-    parallel_for(iter_count, [&](int i) {
-        const size_t dst_off = i * channels_size;
-        for (size_t j = 0; j < nonZeroInShapes; j++) {
-            cpu_memcpy(dst_ptrs[j] + dst_off, src_ptrs[j] + i * channelsDataSize[j], channelsDataSize[j]);
-        }
-    });
+    // const auto cnt = getParentEdgeAt(0)->getMemory().getShape().getElementsCount();
+    // if (cnt == 0)
+    //     printf("!!!!!!!!!!!!!!\n");
+
+    // parallel_for(iter_count, [&](int i) {
+    //     const size_t dst_off = i * channels_size;
+    //     for (size_t j = 0; j < nonZeroInShapes; j++) {
+    //         cpu_memcpy(dst_ptrs[j] + dst_off, src_ptrs[j] + i * channelsDataSize[j], channelsDataSize[j]);
+    //     }
+    // });
 }
 
 void Concat::execRef() {

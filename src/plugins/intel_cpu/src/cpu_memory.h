@@ -317,6 +317,7 @@ public:
     void* getData() const override;
 
     size_t getSize() const override;
+    size_t getSize2() const;
 
     const Shape& getShape() const override {
         return getDesc().getShape();

@@ -67,6 +67,8 @@ private:
 
     bool canComputeMemSizeZeroDims() const override;
     size_t getCurrentMemSizeImp() const override;
+    size_t getCurrentMemSizeImp2() const override;
+
     bool isDefinedImp() const override;
     MemoryDescPtr cloneWithNewDimsImp(const VectorDims& dims) const override;
 

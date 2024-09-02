@@ -72,6 +72,8 @@ private:
     size_t getCurrentMemSizeImp() const override {
         return 0;
     }
+    size_t getCurrentMemSizeImp2() const override { return 0;}
+
     size_t getOffset(const VectorDims& v) const {
         return 0;
     }

@@ -185,6 +185,29 @@ size_t DnnlExtensionUtils::getMemSizeForDnnlDesc(const dnnl::memory::desc& desc)
     return size;
 }
 
+#if 1
+size_t DnnlExtensionUtils::getMemSizeForDnnlDesc2(const dnnl::memory::desc& desc) {
+        desc.clone2();
+        return 10;
+}
+
+#else
+size_t DnnlExtensionUtils::getMemSizeForDnnlDesc2(const dnnl::memory::desc& desc) {
+    auto tmpDesc = desc;
+    size_t size = 0;
+    const auto offset0 = tmpDesc.get()->offset0;
+    tmpDesc.get()->offset0 = 0;
+
+    size = tmpDesc.get_size();
+    if (size == DNNL_RUNTIME_SIZE_VAL)
+        return MemoryDesc::UNDEFINED_SIZE;
+
+    size += offset0 * sizeOfDataType(tmpDesc.get_data_type());
+    return size;
+}
+#endif
+
+
 std::shared_ptr<DnnlBlockedMemoryDesc> DnnlExtensionUtils::makeUndefinedDesc(const memory::desc &desc, const Shape &shape) {
     if (desc.get_format_kind() == memory::format_kind::blocked) {
         return std::shared_ptr<DnnlBlockedMemoryDesc>(new DnnlBlockedMemoryDesc(desc, shape));

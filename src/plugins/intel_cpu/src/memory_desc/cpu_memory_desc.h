@@ -127,6 +127,13 @@ public:
         return retVal;
     }
 
+    size_t getCurrentMemSize2() const {
+        // if (canComputeMemSize()) {
+        size_t retVal = getCurrentMemSizeImp2();
+        return retVal;
+    }
+
+
     bool hasDefinedMaxSize() const {
         return getMaxMemSize() != MemoryDesc::UNDEFINED_SIZE;
     }
@@ -168,6 +175,8 @@ protected:
     virtual void setPrecision(ov::element::Type prc) = 0;
 
     virtual size_t getCurrentMemSizeImp() const = 0;
+    virtual size_t getCurrentMemSizeImp2() const = 0;
+
 
     // Get offset to the n'th element. Returns physical index of the element by the logical one considering padding, layout, blocking etc.
     virtual size_t getElementOffset(size_t elemNumber) const = 0;

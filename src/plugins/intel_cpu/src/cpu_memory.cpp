@@ -99,6 +99,14 @@ size_t Memory::getSize() const {
     return size;
 }
 
+size_t Memory::getSize2() const {
+    auto size = getDesc().getCurrentMemSize2();
+    if (size == MemoryDesc::UNDEFINED_SIZE) {
+        OPENVINO_THROW("Can't get memory size for undefined shape");
+    }
+    return size;
+}
+
 void Memory::create(const MemoryDesc &desc, const void *data, bool pads_zeroing) {
     create(desc.clone(), data, pads_zeroing);
 }

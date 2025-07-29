@@ -1057,6 +1057,8 @@ public:
 
 }  // namespace
 
+
+#define USE_SAGE 1
 class PagedAttentionOptImpl : public SDPAImplBase {
 public:
     DECLARE_OBJECT_TYPE_SERIALIZATION(ov::intel_gpu::ocl::PagedAttentionOptImpl)
@@ -1073,8 +1075,13 @@ public:
 #ifdef ENABLE_ONEDNN_FOR_GPU
     Stage::Ptr pa_sdpa_micro = make_stage<SDPAMicroGenerator>(true);
 #endif
+#if !USE_SAGE
     Stage::Ptr pa_sdpa_cm = make_stage<cm::PagedAttentionSDPAGeneratorMultiToken>();
-
+#else
+    Stage::Ptr cm_sage_kmean = make_stage<cm::PASageGeneratorKMEAN>();
+    Stage::Ptr cm_sage_quan = make_stage<cm::PASageGeneratorQuan>();
+    Stage::Ptr cm_sage_sdpa = make_stage<cm::PASageGeneratorMultiToken>();
+#endif
     PagedAttentionOptImpl() : SDPAImplBase(PagedAttentionOpt::get_type_info_static()) {}
     explicit PagedAttentionOptImpl(const kernel_impl_params& params) : PagedAttentionOptImpl() {
         const auto desc = params.typed_desc<paged_attention>();
@@ -1091,7 +1098,13 @@ public:
 
         const bool use_cm_sdpa = supports_cm_sdpa(params);
         if (use_cm_sdpa) {
+#if !USE_SAGE
             add_stage(pa_sdpa_cm, params);
+#else
+            add_stage(cm_sage_kmean, params);
+            add_stage(cm_sage_quan, params);
+            add_stage(cm_sage_sdpa, params);
+#endif
         }
 
 #ifdef ENABLE_ONEDNN_FOR_GPU
@@ -1272,8 +1285,17 @@ public:
 
         if (rt_params->stage == PagedAttentionStage::PREFILL) {
             if (rt_params->use_cm_kernel) {
+#if !USE_SAGE
                 res_event = {execute_stage(res_event, instance, pa_sdpa_cm)};
                 std::cout << "[GPU] Using CM PA/SDPA kernel for paged attention prefill stage." << std::endl;
+#else
+                res_event = {execute_stage(res_event, instance, cm_sage_kmean)};
+                res_event = {execute_stage(res_event, instance, cm_sage_quan)};
+                res_event = {execute_stage(res_event, instance, cm_sage_sdpa)};
+                std::cout << "[GPU] Using CM SAGE kernel for paged attention prefill stage." << std::endl;
+#endif
+
+
 #ifdef ENABLE_ONEDNN_FOR_GPU
             } else if (rt_params->use_micro_sdpa) {
                 res_event = {execute_stage(res_event, instance, pa_sdpa_micro)};
@@ -1477,6 +1499,16 @@ public:
             internal_buffers.emplace_back(indexes_buf_size * 4, indexes_dt, lockable);
         }
 #endif
+
+#if USE_SAGE
+            if (use_cm_kernel && stage == PagedAttentionStage::PREFILL) {
+                    const auto aligned_seq_len = get_aligned_seq_len(params, stage);
+                    internal_buffers.emplace_back(desc->k_head_size * desc->kv_heads_num*2, ov::element::u8);  // 3: meanK f16 ， 1024
+                    internal_buffers.emplace_back(aligned_seq_len * desc->heads_num*4, ov::element::u8);      // 4: qscale f32， 229376
+                    internal_buffers.emplace_back(aligned_seq_len * desc->kv_heads_num*4, ov::element::u8);  // 5: kscale f32, 32768
+            }
+#endif
+
         GPU_DEBUG_TRACE_DETAIL << "get_internal_buffer_descs: internal_buffers.size = " << internal_buffers.size() << std::endl;
         for (size_t i = 0; i < internal_buffers.size(); i++) {
             GPU_DEBUG_TRACE_DETAIL << "\tinternal_buffers[" << i << "] = " << internal_buffers[i].m_layout.to_short_string() << std::endl;

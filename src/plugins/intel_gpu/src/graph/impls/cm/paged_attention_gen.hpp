@@ -66,5 +66,44 @@ public:
     [[nodiscard]] DispatchDataFunc get_dispatch_data_func() const override;
 };
 
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class PASageGeneratorBase : public KernelGenerator {
+public:
+    explicit PASageGeneratorBase(std::string_view kernel_name, std::string_view stage_suffix = "_cm") : KernelGenerator(kernel_name, stage_suffix) {}
+    [[nodiscard]] std::string get_build_options(const RuntimeParams& params) const override {
+        return KernelGenerator::get_build_options(params) + get_pa_build_options();
+    }
+    [[nodiscard]] JitConstants get_jit_constants(const kernel_impl_params& params) const override;
+};
+
+class PASageGeneratorMultiToken : public PASageGeneratorBase {
+public:
+    PASageGeneratorMultiToken() : PASageGeneratorBase("sage_prefill") {}
+    [[nodiscard]] Arguments get_arguments_desc(const kernel_impl_params& params) const override;
+    [[nodiscard]] JitConstants get_jit_constants(const kernel_impl_params& params) const override;
+    [[nodiscard]] DispatchDataFunc get_dispatch_data_func() const override;
+};
+class PASageGeneratorKMEAN : public PASageGeneratorBase {
+public:
+    #define CMKMEAN_STATE_BLK 32
+    #define CMKMEAN_UNROLL_NUM 32
+    PASageGeneratorKMEAN() : PASageGeneratorBase("sage_kmean") {}
+    [[nodiscard]] Arguments get_arguments_desc(const kernel_impl_params& params) const override;
+    [[nodiscard]] JitConstants get_jit_constants(const kernel_impl_params& params) const override;
+    [[nodiscard]] DispatchDataFunc get_dispatch_data_func() const override;
+};
+
+
+class PASageGeneratorQuan : public PASageGeneratorBase {
+public:
+    PASageGeneratorQuan() : PASageGeneratorBase("sage_quan") {}
+    [[nodiscard]] Arguments get_arguments_desc(const kernel_impl_params& params) const override;
+    [[nodiscard]] JitConstants get_jit_constants(const kernel_impl_params& params) const override;
+    [[nodiscard]] DispatchDataFunc get_dispatch_data_func() const override;
+};
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 }  // namespace ov::intel_gpu::cm
 #endif  // CM_PA_ENABLE

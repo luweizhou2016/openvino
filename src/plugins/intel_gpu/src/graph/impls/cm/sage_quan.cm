@@ -1,0 +1,98 @@
+// Copyright (C) 2025 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+//
+
+//# CM kernel for flash attn, reference
+#include <cm/cm.h>
+#include <cm/cmtl.h>
+
+//# CM-compiler is C++17
+static_assert(__cplusplus >= 201703L);
+//# static_assert(__cplusplus >= 202002L);
+//# static_assert(__cplusplus >= 202302L);
+
+#define SystolicDepth 8
+#define RepeatCount 8
+#define VNNI_WIDTH 2
+#define VNNI_WIDTH_U8 4
+#define REG_K (SystolicDepth * VNNI_WIDTH)
+#define REG_K_U8 (SystolicDepth * VNNI_WIDTH_U8)
+
+inline const float as_float(uint32_t x) {
+    return *reinterpret_cast<float*>(&x);
+}
+
+
+template <int NElts, int step=NElts>
+CM_INLINE void cm_load_1d(vector_ref<uint32_t, NElts> out, SurfaceIndex base, uint offset) {
+    auto mat = out.format<uint32_t, NElts/step, step>();
+    #pragma unroll
+    for (int r = 0; r < NElts/step; r++, offset += step*sizeof(int32_t)) {
+        mat.row(r).format<uint32_t>() = cm_load<uint32_t, step>(base, offset);
+    }
+}
+
+template <int NElts, int step=NElts>
+CM_INLINE void cm_store_1d(vector_ref<uint32_t, NElts> in, SurfaceIndex base, uint offset) {
+    auto mat = in.format<uint32_t, NElts/step, step>();
+
+    #pragma unroll
+    for (int r = 0; r < NElts/step; r++, offset += step*sizeof(int32_t)) {
+        cm_store<uint32_t, step>(base, offset,  mat.row(r).format<uint32_t>());
+    }
+}
+
+
+extern "C" _GENX_MAIN_ _GENX_FLOAT_CONTROL_(CM_RTE)  void KERNEL_NAME(int seqlen, SurfaceIndex q [[type("buffer_t")]], SurfaceIndex k [[type("buffer_t")]],
+                                            SurfaceIndex qscale [[type("buffer_t")]], SurfaceIndex kscale [[type("buffer_t")]], SurfaceIndex kmean_ptr [[type("buffer_t")]]) {
+
+    const float scale_factor = CMFLA_SCALE_FACTOR;
+    auto id = cm_group_id(0)*cm_local_size(0) + cm_linear_local_id();
+    if (id >= CMFLA_NUM_KV_HEADS*seqlen)
+        return;
+    constexpr int KVGRP_SZ =  CMFLA_NUM_HEADS / CMFLA_NUM_KV_HEADS;
+    auto headkv = id % CMFLA_NUM_KV_HEADS;
+    auto head = id * KVGRP_SZ % CMFLA_NUM_HEADS;
+    auto seq = id / CMFLA_NUM_KV_HEADS;
+    auto pitch = CMFLA_HEAD_SIZE*sizeof(half);
+#if CMFLA_QK_FUSED
+    auto qoff = (seq * (CMFLA_NUM_HEADS + CMFLA_NUM_KV_HEADS+ CMFLA_NUM_KV_HEADS) + head)*pitch;
+    auto koff = (seq * (CMFLA_NUM_HEADS + CMFLA_NUM_KV_HEADS + CMFLA_NUM_KV_HEADS) + headkv + CMFLA_NUM_HEADS)*pitch;
+#else
+    auto qoff = (seq * CMFLA_NUM_HEADS  + head)*pitch;
+    auto koff = (seq * CMFLA_NUM_KV_HEADS + headkv)*pitch;
+#endif
+    auto kscale_off = (headkv*seqlen + seq)*sizeof(float);
+    auto qscale_off = (head*seqlen + seq)*sizeof(float);
+
+    vector<half, CMFLA_HEAD_SIZE> token;
+    vector<float, 1> scaleV;
+    constexpr int step = (CMFLA_HEAD_SIZE==64 ||  CMFLA_HEAD_SIZE ==128) ? CMFLA_HEAD_SIZE : REG_K_U8;
+
+    auto quan_token= token.format<int8_t,2, CMFLA_HEAD_SIZE>().row(0);
+
+    #pragma unroll
+    for(int i= 0;i<KVGRP_SZ;i++,qoff+=pitch, qscale_off += sizeof(float)*seqlen) {
+        cm_load_1d<CMFLA_HEAD_SIZE/2, step/2>(token.format<uint32_t>(), q, qoff);
+        half max=cm_reduced_max<half>(cm_abs(token));
+        quan_token =  cm_mul<int8_t>(token, (float)(127.0)/(float)(max));
+        cm_store_1d<CMFLA_HEAD_SIZE/4, step/4>(quan_token.format<uint32_t>(), q, qoff);
+
+        // cm_store<uint32_t, CMFLA_HEAD_SIZE/4>(qkv, qoff, quan_token.format<uint32_t>());
+        scaleV[0] = (float)(max)/127.0;
+        cm_store<uint32_t, 1>(qscale, qscale_off, scaleV.format<uint32_t>());
+    }
+
+    vector<half, CMFLA_HEAD_SIZE> kmean;
+    cm_load_1d<CMFLA_HEAD_SIZE/2, step/2>(token.format<uint32_t>(), k, koff);
+    cm_load_1d<CMFLA_HEAD_SIZE/2, step/2>(kmean.format<uint32_t>(), kmean_ptr, headkv*pitch);
+    token -= kmean;
+    half max=cm_reduced_max<half>(cm_abs(token));
+    quan_token = cm_rnde<int8_t>(cm_mul<float>(token, (float)(127.0)/(float)(max)));
+    cm_store_1d<CMFLA_HEAD_SIZE/4, step/4>(quan_token.format<uint32_t>(), k, koff);
+    scaleV[0] = (float)(max)*scale_factor/float(127.0);
+    cm_store<uint32_t, 1>(kscale, kscale_off, scaleV.format<uint32_t>());
+}
+
+
+

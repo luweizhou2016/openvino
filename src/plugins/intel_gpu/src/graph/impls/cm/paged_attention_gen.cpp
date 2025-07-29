@@ -113,6 +113,246 @@ inline size_t get_split_num(const RuntimeParams& params, const PagedAttentionSta
     return split_num;
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+JitConstants PASageGeneratorBase::get_jit_constants(const kernel_impl_params& params) const {
+    auto jit = KernelGenerator::get_jit_constants(params);
+    jit.add(make_jit_constant("KERNEL_NAME", get_entry_point(params)));
+    // std::cout << "PASageGeneratorBase::get_jit_constants: " << get_entry_point(params) << std::endl;
+
+    auto desc = params.typed_desc<paged_attention>();
+    jit.make("HEAD_SIZE", desc->k_head_size);
+    jit.make("HEADS_NUM", desc->heads_num);
+    jit.make("KV_HEADS_NUM", desc->kv_heads_num);
+
+    const float scale_factor = 1.0 / std::sqrt(static_cast<double>(desc->k_head_size));
+    jit.make("SCALE_FACTOR", scale_factor);
+    jit.make("CMFLA_SCALE_FACTOR", scale_factor);
+    jit.make("CMFLA_NUM_HEADS", desc->heads_num);
+    jit.make("CMFLA_HEAD_SIZE", desc->k_head_size);
+    jit.make("CMFLA_NUM_KV_HEADS", desc->kv_heads_num);
+    //hard code.@todo: using padding to check whether Q,K,V in fused buffer.
+    jit.make("CMFLA_QK_FUSED", 0);
+    jit.make("CMFLA_V_FUSED", 1);
+
+
+    jit.make("WG_SIZE_HINT", WG_SIZE);
+
+    auto xe_arch = params.get_device_info().arch < gpu_arch::xe2 ? 1 : 2;
+    jit.make("XE_ARCH", xe_arch);
+
+    auto split_size = get_kv_split_size(xe_arch);
+    jit.make("KV_STEP", split_size.first);
+
+    jit.make("WG_SIZE", WG_SIZE);
+    return jit;
+}
+
+Arguments PASageGeneratorKMEAN::get_arguments_desc(const kernel_impl_params& params) const {
+    const auto desc = params.typed_desc<paged_attention>();
+
+    OPENVINO_ASSERT(!desc->has_scores_output(), "[GPU][CM] PASageGeneratorKMEAN with scores output is not supported yet");
+
+    Arguments args;
+    // self.kernels.enqueue("cm_kmean", kmean_gws, kmean_lws, seq_len, kmean_seq_blk, t_k, t_mean_k[i])
+
+    args.push_back({ArgumentDescriptor::Types::SCALAR, 0});         // seq_len
+    args.push_back({ArgumentDescriptor::Types::SCALAR, 1});         // kmean_seq_blk
+
+    args.push_back({ArgumentDescriptor::Types::INPUT, 1});          // key input. input1 in pageattenion primitive.
+    args.push_back({ArgumentDescriptor::Types::INTERNAL_BUFFER, 3});// output kmean as internal buffer
+
+    return args;
+}
+
+JitConstants PASageGeneratorKMEAN::get_jit_constants(const kernel_impl_params& params) const {
+    auto jit = PASageGeneratorBase::get_jit_constants(params);
+    const auto desc = params.typed_desc<paged_attention>();
+
+    auto local_sz = params.get_device_info().arch < gpu_arch::xe2 ? 64 : 32;
+
+    jit.make("CMKMEAN_STATE_BLK", CMKMEAN_STATE_BLK);
+    jit.make("CMKMEAN_LOCAL_SZ", local_sz);
+    jit.make("CMKMEAN_UNROLL_NUM", CMKMEAN_UNROLL_NUM);
+
+    // for (auto& it : jit) {
+    //     std::cout << "\tjit[" << it.name << "] = " << it.value << std::endl;
+    // }
+    // std::cout << std::endl;
+    return jit;
+}
+
+DispatchDataFunc PASageGeneratorKMEAN::get_dispatch_data_func() const {
+    return DispatchDataFunc{[](const RuntimeParams& params, KernelData& kd, ImplRuntimeParams* rt_params) {
+        auto& wgs = kd.params.workGroups;
+        auto& scalars = kd.params.scalars;
+        auto desc = params.typed_desc<paged_attention>();
+        // auto rtp = static_cast<PagedAttentionRuntimeParams*>(rt_params);
+        const size_t kv_heads_num = desc->kv_heads_num;
+        const size_t head_size = desc->k_head_size;
+        const size_t local_sz = params.get_device_info().arch < gpu_arch::xe2 ? 64 : 32;
+        auto out_shape = params.output_layouts[0].get_shape();
+        const size_t seq_len = out_shape[0];
+        size_t kmean_seq_blk = (seq_len + local_sz - 1) / local_sz;
+        kmean_seq_blk = align_to(kmean_seq_blk, CMKMEAN_UNROLL_NUM);
+
+
+        wgs.global = {kv_heads_num, head_size / CMKMEAN_STATE_BLK, local_sz};
+        wgs.local = {1, 1, local_sz};
+
+        std::vector<size_t> scaler_value = {seq_len, kmean_seq_blk};
+        scalars.resize(scaler_value.size());
+        for (size_t i = 0; i < scaler_value.size(); ++i) {
+            scalars[i].t = ScalarDescriptor::Types::INT32;
+            scalars[i].v.s32 = static_cast<int32_t>(scaler_value[i]);
+        }
+    }};
+}
+
+Arguments PASageGeneratorQuan::get_arguments_desc(const kernel_impl_params& params) const {
+    const auto desc = params.typed_desc<paged_attention>();
+
+    OPENVINO_ASSERT(!desc->has_scores_output(), "[GPU][CM] PASageGeneratorQuan with scores output is not supported yet");
+
+    Arguments args;
+    //self.kernels.enqueue("cm_quantize_qk", quan_gws, quan_lws, seq_len, t_q, t_k, t_dqscale_q[i], t_dqscale_k[i], t_mean_k[i])
+
+    args.push_back({ArgumentDescriptor::Types::SCALAR, 0});  // seq_len
+    args.push_back({ArgumentDescriptor::Types::INPUT, 0});  // query
+    args.push_back({ArgumentDescriptor::Types::INPUT, 1});  // key
+
+    args.push_back({ArgumentDescriptor::Types::INTERNAL_BUFFER, 4}); //dqscale_q
+    args.push_back({ArgumentDescriptor::Types::INTERNAL_BUFFER, 5}); //dqscale_k
+    args.push_back({ArgumentDescriptor::Types::INTERNAL_BUFFER, 3}); //meanK
+
+    return args;
+}
+
+JitConstants PASageGeneratorQuan::get_jit_constants(const kernel_impl_params& params) const {
+    auto jit = PASageGeneratorBase::get_jit_constants(params);
+    const auto desc = params.typed_desc<paged_attention>();
+
+    // auto xe_arch = params.get_device_info().arch < gpu_arch::xe2 ? 1 : 2;
+
+    // TODO: set causal mask only if needed
+
+    // for (auto& it : jit) {
+    //     std::cout << "\tjit[" << it.name << "] = " << it.value << std::endl;
+    // }
+    // std::cout << std::endl;
+    return jit;
+}
+
+DispatchDataFunc PASageGeneratorQuan::get_dispatch_data_func() const {
+    return DispatchDataFunc{[](const RuntimeParams& params, KernelData& kd, ImplRuntimeParams* rt_params) {
+        auto& wgs = kd.params.workGroups;
+        auto& scalars = kd.params.scalars;
+        auto desc = params.typed_desc<paged_attention>();
+        // auto rtp = static_cast<PagedAttentionRuntimeParams*>(rt_params);
+        const size_t kv_heads_num = desc->kv_heads_num;
+        // const size_t head_size = desc->k_head_size;
+        const size_t local_sz = params.get_device_info().arch < gpu_arch::xe2 ? 64 : 32;
+        auto out_shape = params.output_layouts[0].get_shape();
+        const size_t seq_len = out_shape[0];
+
+        wgs.global = {align_to(kv_heads_num*seq_len, local_sz)};
+        wgs.local = {local_sz};
+
+        std::vector<size_t> scaler_value = {seq_len};
+        scalars.resize(scaler_value.size());
+        for (size_t i = 0; i < scaler_value.size(); ++i) {
+            scalars[i].t = ScalarDescriptor::Types::INT32;
+            scalars[i].v.s32 = static_cast<int32_t>(scaler_value[i]);
+        }
+    }};
+}
+
+Arguments PASageGeneratorMultiToken::get_arguments_desc(const kernel_impl_params& params) const {
+    const auto desc = params.typed_desc<paged_attention>();
+
+    OPENVINO_ASSERT(!desc->has_scores_output(), "[GPU][CM] PASageGeneratorMultiToken with scores output is not supported yet");
+
+    Arguments args;
+    //self.kernels.enqueue("cm_sage_sdpa", GWS, LWS, seq_len, t_q, t_k, t_v, t_dqscale_q[i], t_dqscale_k[i], t_out)
+
+    args.push_back({ArgumentDescriptor::Types::SCALAR, 0});  // seq_len
+
+    args.push_back({ArgumentDescriptor::Types::INPUT, 0});  // quantized query
+    args.push_back({ArgumentDescriptor::Types::INPUT, 1});  // qyabtized key
+    args.push_back({ArgumentDescriptor::Types::INPUT, 2});  // value
+
+    args.push_back({ArgumentDescriptor::Types::INTERNAL_BUFFER, 4}); //t_dqscale_q
+    args.push_back({ArgumentDescriptor::Types::INTERNAL_BUFFER, 5}); //t_dqscale_k
+
+    args.push_back({ArgumentDescriptor::Types::OUTPUT, 0});
+
+
+    return args;
+}
+
+JitConstants PASageGeneratorMultiToken::get_jit_constants(const kernel_impl_params& params) const {
+    auto jit = PASageGeneratorBase::get_jit_constants(params);
+    const auto desc = params.typed_desc<paged_attention>();
+
+    // auto xe_arch = params.get_device_info().arch < gpu_arch::xe2 ? 1 : 2;
+    // jit.make("Q_STEP", get_q_step(xe_arch, false));
+
+    // TODO: set causal mask only if needed
+    auto causal_mask = 1;
+    // jit.make("CAUSAL_MASK", causal_mask);
+    jit.make("CMFLA_IS_CAUSAL", causal_mask);
+
+    // for (auto& it : jit) {
+    //     std::cout << "\tjit[" << it.name << "] = " << it.value << std::endl;
+    // }
+    // std::cout << std::endl;
+    return jit;
+}
+
+DispatchDataFunc PASageGeneratorMultiToken::get_dispatch_data_func() const {
+    return DispatchDataFunc{[](const RuntimeParams& params, KernelData& kd, ImplRuntimeParams* rt_params) {
+        auto& wgs = kd.params.workGroups;
+        auto& scalars = kd.params.scalars;
+        auto desc = params.typed_desc<paged_attention>();
+        // auto rtp = static_cast<PagedAttentionRuntimeParams*>(rt_params);
+        const size_t heads_num = desc->heads_num;
+        // const size_t head_size = desc->k_head_size;
+
+        auto out_shape = params.output_layouts[0].get_shape();
+        const size_t batch = out_shape.size() < 4 ? 1 : out_shape[0];
+        const size_t seq_len = out_shape[0];
+
+        auto xe_arch = params.get_device_info().arch < gpu_arch::xe2 ? 1 : 2;
+        const size_t q_step = get_q_step(xe_arch, false);
+        const size_t q_group_size = WG_SIZE * q_step;
+        const size_t q_threads = align_to(seq_len, q_group_size) / q_step;
+
+        wgs.global = {batch, heads_num, q_threads};
+        wgs.local = {1, 1, WG_SIZE};
+
+        // std::cout << "PagedAttentionGeneratorMultiToken::get_dispatch_data_func: "
+        //           << "out_shape: " << out_shape.to_string() << ", batch: " << batch << ", heads_num: " << heads_num << ", q_threads: " << q_threads
+        //           << ", q_len: " << q_len << ", q_step: " << q_step << std::endl;
+
+        // auto& value_layout = params.input_layouts[2];
+        // std::cout << "PagedAttentionGeneratorMultiToken::get_dispatch_data_func: "
+        //           << "value_layout: " << value_layout.to_string() << ", v_before_padding: " << v_before_padding << std::endl;
+        // Prefill stage: kv_len == q_len
+        std::vector<size_t> scaler_value = {seq_len};
+        scalars.resize(scaler_value.size());
+        for (size_t i = 0; i < scaler_value.size(); ++i) {
+            scalars[i].t = ScalarDescriptor::Types::INT32;
+            scalars[i].v.s32 = static_cast<int32_t>(scaler_value[i]);
+        }
+    }};
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 JitConstants PagedAttentionGeneratorBase::get_jit_constants(const kernel_impl_params& params) const {
     auto jit = KernelGenerator::get_jit_constants(params);
     jit.add(make_jit_constant("KERNEL_NAME", get_entry_point(params)));
@@ -185,15 +425,15 @@ DispatchDataFunc PagedAttentionSDPAGeneratorMultiToken::get_dispatch_data_func()
         // const size_t head_size = desc->k_head_size;
 
         auto out_shape = params.output_layouts[0].get_shape();
-        const size_t batch = out_shape.size() < 4 ? 1 : out_shape[0];
+        // const size_t batch = out_shape.size() < 4 ? 1 : out_shape[0];
         const size_t q_len = out_shape[0];
 
         auto xe_arch = params.get_device_info().arch < gpu_arch::xe2 ? 1 : 2;
         const size_t q_step = get_q_step(xe_arch, false);
         const size_t q_group_size = WG_SIZE * q_step;
         const size_t q_threads = align_to(q_len, q_group_size) / q_step;
-
-        wgs.global = {batch, heads_num, q_threads};
+        //hardcode batch =1
+        wgs.global = {1, heads_num, q_threads};
         wgs.local = {1, 1, WG_SIZE};
 
         // std::cout << "PagedAttentionGeneratorMultiToken::get_dispatch_data_func: "
